@@ -61,6 +61,33 @@
             color: var(--text-muted);
             font-style: italic;
         }
+        .item-checkbox {
+            margin-right: 10px;
+            cursor: pointer;
+            accent-color: var(--primary);
+            width: 16px;
+            height: 16px;
+        }
+        .item-label-container {
+            display: flex;
+            align-items: center;
+        }
+        .percentage-input {
+            width: 70px;
+            padding: 5px;
+            margin: 0 5px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(0, 0, 0, 0.2);
+            color: white;
+            font-size: 16px;
+            text-align: center;
+            font-family: inherit;
+        }
+        .percentage-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
     </style>
 </head>
 <body>
@@ -124,7 +151,11 @@
                 </div>
                 
                 <div class="result-item highlight-box">
-                    <span class="label">El 20% del Resultado es:</span>
+                    <span class="label">
+                        El 
+                        <input type="number" id="percentage-input" class="percentage-input" value="20" min="0" max="100" step="any">
+                        % del Resultado es:
+                    </span>
                     <span class="value highlight-val" id="val-20"></span>
                 </div>
 
@@ -139,6 +170,10 @@
         const errorMessage = document.getElementById('error-message');
         const resultsContainer = document.getElementById('results-container');
         const submitBtn = document.getElementById('submit-btn');
+        const percentageInput = document.getElementById('percentage-input');
+
+        let globalHaberes = [];
+        let globalDescuentos = [];
 
         fileInput.addEventListener('change', function(e) {
             if (e.target.files.length > 0) {
@@ -152,6 +187,12 @@
             resultsContainer.style.display = 'none';
         });
 
+        percentageInput.addEventListener('input', () => {
+            if (globalHaberes.length > 0 || globalDescuentos.length > 0) {
+                recalcularTotales();
+            }
+        });
+
         const formatMoney = (amount) => {
             return "Bs. " + amount.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         };
@@ -162,6 +203,67 @@
             errorMessage.textContent = msg;
             submitBtn.textContent = 'Procesar PDF';
             submitBtn.disabled = false;
+        };
+
+        const toggleItem = (type, index, isChecked) => {
+            if (type === 'haber') {
+                globalHaberes[index].checked = isChecked;
+            } else {
+                globalDescuentos[index].checked = isChecked;
+            }
+            recalcularTotales();
+        };
+
+        const renderAndCalculate = () => {
+            const renderList = (containerId, details, type) => {
+                const container = document.getElementById(containerId);
+                container.innerHTML = '';
+                if (details.length === 0) {
+                    container.innerHTML = '<div class="empty-msg">No se encontraron ítems</div>';
+                } else {
+                    details.forEach((d, index) => {
+                        let div = document.createElement('div');
+                        div.className = 'result-item sub-item';
+                        let isDeduction = type === 'descuento';
+                        let cssClass = isDeduction ? 'value deduction' : 'value';
+                        let sign = isDeduction ? '- ' : '';
+                        
+                        div.innerHTML = `
+                            <div class="item-label-container">
+                                <input type="checkbox" class="item-checkbox" ${d.checked ? 'checked' : ''} onchange="toggleItem('${type}', ${index}, this.checked)">
+                                <span class="label">${d.concepto}</span>
+                            </div>
+                            <span class="${cssClass}">${sign}${formatMoney(d.monto)}</span>
+                        `;
+                        container.appendChild(div);
+                    });
+                }
+            };
+
+            renderList('haberes-list', globalHaberes, 'haber');
+            renderList('descuentos-list', globalDescuentos, 'descuento');
+            
+            recalcularTotales();
+            
+            resultsContainer.style.display = 'block';
+            submitBtn.textContent = 'Procesar PDF';
+            submitBtn.disabled = false;
+        };
+
+        const recalcularTotales = () => {
+            let totalHaberes = globalHaberes.filter(h => h.checked).reduce((sum, h) => sum + h.monto, 0);
+            let totalDescuentos = globalDescuentos.filter(d => d.checked).reduce((sum, d) => sum + d.monto, 0);
+            
+            document.getElementById('val-haberes-total').textContent = formatMoney(totalHaberes);
+            document.getElementById('val-descuentos-total').textContent = "- " + formatMoney(totalDescuentos);
+
+            const ingresoNeto = totalHaberes - totalDescuentos;
+            
+            let percent = parseFloat(percentageInput.value) || 0;
+            const resultadoPorcentaje = ingresoNeto * (percent / 100);
+
+            document.getElementById('val-neto').textContent = formatMoney(ingresoNeto);
+            document.getElementById('val-20').textContent = formatMoney(resultadoPorcentaje);
         };
 
         async function processPDF() {
@@ -214,8 +316,6 @@
 
                     let haberesDetails = [];
                     let descuentosDetails = [];
-                    let totalHaberes = 0.0;
-                    let totalDescuentos = 0.0;
 
                     // Diccionario de códigos estándar de Haberes DGCyE (Provincia de Buenos Aires)
                     // Se exige [.,]\d{2} al final para garantizar que capture el monto con centavos y no fechas (como 08/2008)
@@ -228,27 +328,37 @@
                         { name: "FONID / Conectiv (2575)", rx: /2575\s+BON\s+NO\s+REM\s+COMP\.FONID\/CONECTIV\s+([\d.,]+[.,]\d{2})/i }
                     ];
 
-                    const descuentosCodes = [
-                        { name: "I.P.S. (1060)", rx: /1060\s+I\.P\.S\.\s+([\d.,]+[.,]\d{2})/i },
-                        { name: "I.O.M.A. (1280)", rx: /1280\s+I\.O\.M\.A\s+([\d.,]+[.,]\d{2})/i }
-                    ];
-
                     // Procesar Haberes
                     haberesCodes.forEach(concepto => {
                         let montos = findConcept(concepto.rx, textCompleto);
                         montos.forEach(monto => {
-                            haberesDetails.push({ concepto: concepto.name, monto: monto });
-                            totalHaberes += monto;
+                            haberesDetails.push({ concepto: concepto.name, monto: monto, checked: true });
                         });
                     });
 
-                    // Procesar Descuentos
-                    descuentosCodes.forEach(concepto => {
-                        let montos = findConcept(concepto.rx, textCompleto);
-                        montos.forEach(monto => {
-                            descuentosDetails.push({ concepto: concepto.name, monto: monto });
-                            totalDescuentos += monto;
-                        });
+                    // Procesar Descuentos (Capturar todos los códigos de 4 dígitos)
+                    let allConceptsRx = /(?:^|\s)(\d{4})\s+([A-ZÑ\s./-]+?)\s+([\d.,]+[.,]\d{2})/gi;
+                    let matchConcept;
+                    let allConcepts = [];
+                    while ((matchConcept = allConceptsRx.exec(textCompleto)) !== null) {
+                        let code = matchConcept[1];
+                        let desc = matchConcept[2].trim();
+                        let montoStr = matchConcept[3].replace(/\./g, '').replace(/,/g, '.');
+                        if (matchConcept[3].includes('.') && !matchConcept[3].includes(',')) {
+                            montoStr = matchConcept[3];
+                        }
+                        let monto = parseFloat(montoStr);
+                        allConcepts.push({ code, desc, monto });
+                    }
+
+                    // Identificar como descuento todo lo que sea código >= 1000 y no sea un haber conocido
+                    const knownHaberCodes = ["0220", "0455", "0510", "0653", "2050", "2575"];
+                    
+                    allConcepts.forEach(concept => {
+                        if (!knownHaberCodes.includes(concept.code) && parseInt(concept.code) >= 1000) {
+                            // Validar que no se dupliquen si la misma línea matchea varias veces (aunque regex con .exec en texto completo debería estar bien)
+                            descuentosDetails.push({ concepto: `${concept.desc} (${concept.code})`, monto: concept.monto, checked: true });
+                        }
                     });
 
                     if (haberesDetails.length === 0) {
@@ -256,39 +366,10 @@
                         return;
                     }
 
-                    // Renderizar desglose
-                    const renderList = (containerId, details, isDeduction) => {
-                        const container = document.getElementById(containerId);
-                        container.innerHTML = '';
-                        if (details.length === 0) {
-                            container.innerHTML = '<div class="empty-msg">No se encontraron ítems</div>';
-                        } else {
-                            details.forEach(d => {
-                                let div = document.createElement('div');
-                                div.className = 'result-item sub-item';
-                                let cssClass = isDeduction ? 'value deduction' : 'value';
-                                let sign = isDeduction ? '- ' : '';
-                                div.innerHTML = `<span class="label">${d.concepto}</span><span class="${cssClass}">${sign}${formatMoney(d.monto)}</span>`;
-                                container.appendChild(div);
-                            });
-                        }
-                    };
-
-                    renderList('haberes-list', haberesDetails, false);
-                    renderList('descuentos-list', descuentosDetails, true);
-
-                    document.getElementById('val-haberes-total').textContent = formatMoney(totalHaberes);
-                    document.getElementById('val-descuentos-total').textContent = "- " + formatMoney(totalDescuentos);
-
-                    const ingresoNeto = totalHaberes - totalDescuentos;
-                    const veintePorciento = ingresoNeto * 0.20;
-
-                    document.getElementById('val-neto').textContent = formatMoney(ingresoNeto);
-                    document.getElementById('val-20').textContent = formatMoney(veintePorciento);
-
-                    resultsContainer.style.display = 'block';
-                    submitBtn.textContent = 'Procesar PDF';
-                    submitBtn.disabled = false;
+                    globalHaberes = haberesDetails;
+                    globalDescuentos = descuentosDetails;
+                    
+                    renderAndCalculate();
                     
                 } catch (error) {
                     console.error(error);
